@@ -1,0 +1,27 @@
+---
+title: "Notes710"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. 
+
+This is a machine-learning assisted content analysis of reading notes taken by the participants of a reading group for the McGill PhD Seminar MGMT710: Designing Social Science Research, taught by Diana Dakhlallah, Winter 2021.
+
+```{r}
+#preamble
+setwd("~/Documents/OneDrive - McGill University/R/Projects/notes710") #working directory
+
+#required packages
+library(gsheet) # my raw data is in a google sheet
+
+```
+
+The first step in this process is cleaning and arranging the raw data, the texts.
+I have pasted the text from the notes in a google sheet (minus formatting). Now to import it into r.
+
+```{r}
+notes<-gsheet2tbl('docs.google.com/spreadsheets/d/1c2eWivCgCpU74-U0paQXfWAWNKo_O1euxua7JlXbJWo')
+notes
+```
+
+
