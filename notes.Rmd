@@ -1,27 +1,256 @@
 ---
-title: "Notes710"
-output: html_notebook
+title: "Notes 710"
+output: 
+  html_document: 
+    df_print: tibble
+    fig_height: 7
+    fig_width: 9
 ---
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. 
+This is a machine-assisted qualitative content analysis of class notes prepared by seven participants of a reading group for a Winter 2021 PhD Seminar at McGill University. Every week we each choose among the assigned readings and prepare summary notes for the rest of the group, to aid their reading. The texts of these notes are the raw data for this analysis.
 
-This is a machine-learning assisted content analysis of reading notes taken by the participants of a reading group for the McGill PhD Seminar MGMT710: Designing Social Science Research, taught by Diana Dakhlallah, Winter 2021.
+Our stated goals are to use this analysis to explore content analysis methods and to look for semantic structure in our note-taking. This R vignette will capture the entire analysis pipeline. As with any halfay-decent machine-assisted qualitative analysis, it helps to have actually read the original texts. 
 
-```{r}
+For the lay reader: the nature of our PhD seminar, the intellectual proclivities of our professor, and our own linguistic tendencies will be made manifest in our analysis of the text.
+
+```{r,message=F}
 #preamble
+rm(list=ls()) #clear memory
 setwd("~/Documents/OneDrive - McGill University/R/Projects/notes710") #working directory
 
 #required packages
-library(gsheet) # my raw data is in a google sheet
-
+library(knitr) #publishing this notebook
+library(gsheet) #accessing raw data from google sheets
+library(tidyverse) #data manipulation
+library(data.table) #data manipulation
+library(tidytext) #text manipulation
+library(textmineR) #topic modeling
+library(philentropy) #clustering topics
+library(ggplot2) #plot
+library(RColorBrewer) #plot
 ```
 
 The first step in this process is cleaning and arranging the raw data, the texts.
-I have pasted the text from the notes in a google sheet (minus formatting). Now to import it into r.
+I have pasted the text from the notes into a google sheet (_sans_ formatting), one row per document. Conceptually, each reading summary written by each note-taker constitutes one "document" in our corpus. There is information in formatting. For example, whether an author prefers to use bullets or prose, or how they organize text into paragraphs tells us something about them. In this analysis, however, we do not consider formatting.
 
-```{r}
-notes<-gsheet2tbl('docs.google.com/spreadsheets/d/1c2eWivCgCpU74-U0paQXfWAWNKo_O1euxua7JlXbJWo')
-notes
+An inspection of the [data](https://docs.google.com/spreadsheets/d/1c2eWivCgCpU74-U0paQXfWAWNKo_O1euxua7JlXbJWo) reveals that some of the readings are related, so we may expect notes about related readings to be more similar to each other than to other notes in some ways. We may also expect notes written by the same noter to be more similar in other ways to each other than notes written by different noters.
+
+Now, import it all into R.
+
+```{r,message=F}
+data1<-gsheet2tbl('docs.google.com/spreadsheets/d/1c2eWivCgCpU74-U0paQXfWAWNKo_O1euxua7JlXbJWo') #use the sharing/viewing url for the sheet here
+print(data1,n=7) #print first 7 rows
+```
+Next, we tokenize this text. This means we're going to transform the data into one row per word. This helps us do some basic counting and cleaning. We'll reconstitute it back into one row per document before modeling it. Note that you can choose to tokenize by bigram (two words per row), trigram (three words per row), line, sentence, paragraph, etc depending on your unit of analysis. Because we disaggregate texts like this, it is critical that you have a unique identifier for each document. I like my unique identifiers to also be informative. Here, noteid is informative of the "week" of class and the author of the note.
+
+This "only one thing per row" concept is core to the Tidy 'verse. We'll be using a lot of Tidy methods here. Tidy is a disciplined way of thinking about data architecture that facilitates a relatively simple but versatile programming syntax that allows us to ask a huge number of empirical research questions. We will of course, frequently make the data unTidy for various practical reasons. 
+
+This is what the data looks like now. All punctuation and capitalization is now stripped out.
+```{r,message=F}
+notes<-data1[,c(1,2,7)] # I only want NoteID, Noter, and Text
+notes_unnested<-notes %>%
+  unnest_tokens(word,notes_noformat) #unnest column notes_noformat into words.
+print(notes_unnested,n=15)
+```
+Note the information around the data. This is a "tibble" with certain number of rows x columns. This is a one word per row table so that means there are "number of rows of the notes_unnested table" words in our corpus. 
+
+For the number of unique words in the corpus, look at the row count of the notes_words table.
+```{r,message=F}
+notes_words<-notes_unnested %>% # in the notes_unnested table,
+  count(word,sort=TRUE) # count how many times each word appears
+
+print(notes_words,n=15)
+```
+Now we can start looking at things like most frequent words by noter. 
+```{r,message=F}
+n<-10
+noter_topw<-notes_unnested %>% #in the notes_unnested table,
+  count(noter,word,sort=TRUE) %>% #count unique noter-word combinations,
+  group_by(noter) %>% 
+  top_n(10) %>% #and show me top "n" words used by noter
+  arrange(noter)
+
+#make the table "wide" so its easier to read.
+noter_topw_w<-data.frame(matrix(0,nrow=n,ncol=length(unique(noter_topw$noter))))
+for(i in 1: length(unique(noter_topw$noter))) {
+noter_topw_w[,i]<-head(noter_topw[noter_topw$noter==unique(noter_topw$noter)[i],2],n)
+} 
+names(noter_topw_w)<-unique(noter_topw$noter)
+head(noter_topw_w,n=n)
+```
+You'll notice a lot of words like "the" and "of". Lets remove them. We'll use a pre-existing lexicon of "stop words" to remove them from our corpus, and redo the top word exercise. Some of our semantic "personality" is likely reflected in how we use these words, so we're losing some of that information when we remove stop words.
+
+```{r,message=F}
+data(stop_words) #load lexicon
+notes_unnested_ns <- notes_unnested %>%
+  anti_join(stop_words)
+
+n<-10
+noter_topw_ns<-notes_unnested_ns %>%
+  count(noter,word,sort=TRUE) %>%
+  group_by(noter) %>%
+  top_n(10) %>%
+  arrange(noter)
+
+noter_topw_w_ns<-data.frame(matrix(0,nrow=n,ncol=length(unique(noter_topw_ns$noter))))
+for(i in 1: length(unique(noter_topw_ns$noter))) {
+noter_topw_w_ns[,i]<-head(noter_topw_ns[noter_topw_ns$noter==unique(noter_topw_ns$noter)[i],2],n)
+} 
+names(noter_topw_w_ns)<-unique(noter_topw_ns$noter)
+head(noter_topw_w_ns,n=n)
+```
+Note: cleaning your analysis corpus "automagically" has some limitations.  Words like "cases" and different" get cleaned out. I'm not sure I agree that these are meaningless "filler" words. But the alternative is to manually remove stop words one by one, and that can get very tedious. So "anti-joining" is an easy option. Anti-joining A and B means removing all elements of A $\bigcap$ B from A.
+
+Lets also check what the stop word removal did to the size of our corpus.
+
+```{r,message=F}
+#wordcount
+dim(notes_unnested_ns)[1] #number of rows. For columns, [2]
+#unique words
+notes_words_ns<-notes_unnested_ns %>% 
+  count(word,sort=TRUE) 
+dim(notes_words_ns)[1] 
 ```
 
+Are the top words of each noter, stripped of stop words, informative of what we are writing "about?" What can we infer about the sort of class that the noters are taking? Looks pretty clear at this point that its a methods class. However, because we are talking about multiple authors, multiple documents per author, something aggregative at the level of the whole corpus might be more useful.
+
+So now, we turn to LDA topic modeling. I highly recommend at this point you first go read [this](https://eight2late.wordpress.com/2015/09/29/a-gentle-introduction-to-topic-modeling-using-r/). If you're feeling feisty, try the Wikipedia articles for [Distributional Semantics](https://en.wikipedia.org/wiki/Distributional_semantics) and [Latent Dirichlet Allocation](https://en.wikipedia.org/wiki/Latent_Dirichlet_allocation).
+
+Ok, all done? Now lets proceed. I'm going to work with the "no stop word" version of the corpus, so first I need to reconstitute it back into one row per document.
+``` {r, message=F}
+
+notes_reconst_ns<-notes_unnested_ns[,] %>%
+  group_by(noteid) %>% #one row per note
+  mutate(ind=row_number()) %>%
+  tidyr::spread(key=ind,value=word) # this creates a column for each word in each note
+notes_reconst_ns[is.na(notes_reconst_ns)] <-""
+notes_reconst_ns<-tidyr::unite(notes_reconst_ns,notes_ns,-c("noteid","noter"),sep=" ",remove=T) #stitch one-word columns together
+
+print(notes_reconst_ns,n=7) #print first 7 rows
+```
+Now, to create a document term matrix. This is a sparse matrix (lots of blanks) with one row per document and one column per "term." At its most basic, a term is a word. For our analysis, I'll be using both words and bigrams (two-word combinations). 
+
+To illustrate, the phrase "the quick brown fox" consists of the terms the + quick + brown + fox + the quick + quick brown + brown fox. Note that we have stripped our text of stopwords, so some of these bigrams may not accurately reflect their actual use. 
+
+``` {r,message=F}
+notes_ns_dtm <- CreateDtm(notes_reconst_ns$notes_ns, 
+                    doc_names = notes_reconst_ns$noteid, 
+                    ngram_window = c(1, 2))
+```
+
+Now, for an important step. LDA operates under the assumption that any corpus of documents can be described as a mixture of some pre-determined number of topics or themes. So each document can be described using a vector of probabilities. However, the length of that vector, a "correct" **number of topics "k" needs to pre-specified**. There are many ways at coming up with some "best" number of topics. 
+
+I choose to optimize for semantic coherence, a measure of how distinct the meaning of one topic or theme is from the other topics present in the field. Partly because this makes sense as something to optimize for topics, and also because the developer of the [textmineR package](https://www.rtextminer.com/index.html) has spent a lot of time thinking about coherence, and is very thoughtful in the implementation. We are looking for the number of topics that maximizes the average coherence of topics, so we need to search through some range of parameter space.
+
+So where do we start? One way to do it, when you're new to a type of corpus, is to start low, around 5 topics, and cast a wide net, all the way up to around 50 topics. Over time, you get a feel for the range of topics in a particular type of corpus, and then you can start with a narrower range. This is important, because the search process can be very time consuming for large corpora. You're basically estimating an LDA topic model of your text with 5 topics, then 6 topics, then 7, and so on, and for large corpora, each estimation may take a lot of time. 
+
+A good analogy is the use of adjustable focus in photography. You can choose to focus on a particular plane by adjusting the configuration of lenses. Similarly, you see coherence spikes when the number of topics k is such that there's roughly one topic per various socially determined groups of documents, one topic per document, one topic per section of document, per subsection, per sentence, per phrase, etc. For now, with a relatively low number of documents, **we want to understand what each of our notes are "about"**, so we're looking for a document-level spike, or a spike in coherence around number of topics = number of notes. The more you know and have read your texts, the easier it is for you to guesstimate things like number of subsections in your text or number of social groups represented in the texts.
+
+You also have to be careful not to go too high. A metric like coherence can only go so far. An extremely high number of topics may optimize coherence "the metric", but may not be very coherent to you, the human observer. For pure quantitative comparisons of texts, that may be OK. We, however, are prioritizing human interpretability in how we use LDA. From experience, anything much above 50 topics becomes hard to process. So optimizing for coherence at one topic per document in a corpus of 20,000 documents is probably not a good idea. 
+
+
+``` {r, message=F}
+coh<-data.frame(k=seq(5,nrow(notes_reconst_ns)+5,by=1),coh=0)
+
+#create a vector to store the results of our search 
+for (i in 1:dim(coh)[1]) {
+set.seed(12345)
+notes_ns_lda<-FitLdaModel(dtm = notes_ns_dtm, k = coh[i,1], iterations = 500)
+coh[i,2]<-mean(notes_ns_lda$coherence)
+rm(notes_ns_lda)
+}
+
+plot(coh$k,coh$coh,type="l",xlab="Number of Topics",ylab="Average Coherence of Topics")
+```
+
+Looks like we have a winner. Now lets look at a summary of topics in our corpus
+
+```{r, message=F}
+k<-coh[coh$coh==max(coh$coh),1]
+set.seed(12345)
+notes_ns_lda<-FitLdaModel(dtm = notes_ns_dtm, k = k, iterations = 5000) # more iterations for the "final" run
+notes_ns_lda_sum<-SummarizeTopics(notes_ns_lda)
+kable(notes_ns_lda_sum)
+```
+
+First, the labels. These are machine generated, high probabilty bigrams associated with the topics. Its easier to think of a topic in terms of a label than as a number (topic 1, topic 2). Think of this as the machine's inductive open coding. I'm a big fan of recoding the topics in a way that makes sense to you. This may also be an occasion to assess how similar your interpretation of a topic is relative to others in your team. 
+
+Some definitions:
+
+**Prevalence**: Pr (topic | corpus) or how "present" your topic is in the corpus. If I were to grab a document at random, how likely would I be to find this topic present? This column sums to 100.
+
+**Coherence**: How distinct is a topic from all others. Ranges from 0 to 1. Roughly: Pr (Top phi terms | Topic  $\neq$ Top phi terms | Other Topics)
+
+**Phi**: Pr (Term | Topic). Top terms are those more central to the meaning of the topic
+
+**Gamma**: Pr (Topic | Term). Top terms are those most exclusive to the topic.
+
+Now, we probably have a slightly better sense of what type of methods class this is. Some **notes about topic distributions**: 
+
+-**Highly coherent topics are often rare topics**. When many authors in many notes are writing about the same topic, the natural variation in their writing styles and note context makes the topic diffuse. In our corpus, these high coherent topics are often specifically addressed in a paper or chapter we were summarizing.
+
+-**High prevalence + low coherence topics are usually "corpus-level concerns"** that concern all authors of a longitudinal multi-authored corpus. This being a methods class, these are usually issues of research design.
+
+-**Prevalence is related to volume of text pertaining to a topic**. So topics covered in lengthier notes are more likely to have high prevalence
+
+-**Coherence is related to exclusivity of vocabulary**. In highly coherent topics, there is overlap between central and exclusive vocabularies.
+
+Now that we know what topics are present in the corpus, lets take advantage of a most wonderful output of a topic model, the document topic matrix. It is a **Very Good Matrix**. It is one row per document or note, and each row is a vector of probability that each of the topics in the corpus is present in the document. This vector sums to 1, so its giving you the % presence of each topic in a note. You can do A LOT with this matrix, both qualitatively and quantitatively.
+
+We can use this matrix to look at how topics are related to each other,and how they are distributed over time and authors. This is a way of analyzing discourse.
+
+``` {r, message = F}
+doc_top<-as.data.frame(notes_ns_lda$theta) # theta is the document top matrix in the LDA object that we created above.
+doc_top$noteid<-rownames(doc_top)
+notes_dim<-notes[,c(1,2)]
+notes_dim$week<-substr(notes_dim$noteid,1,2)
+doc_top<-merge(notes_dim,doc_top) # adding dimensions like noter and week to each document
+
+#To cluster topics on how likely they are mutually present in a note or a reading:
+doc_top.mat<-t(as.matrix(doc_top[,4:ncol(doc_top)]))
+doc_top.dist<-JSD(doc_top.mat) #Jensen Shannon distance between the probability vector
+doc_top.hclust<-hclust(as.dist(doc_top.dist),method="ward.D") #hclusts are data objects about the hierarchical relationship between items. 
+plot(doc_top.hclust,labels=paste(notes_ns_lda_sum$topic,notes_ns_lda_sum$label_1),cex=0.65,main="Topics clustered on co-occurence in document")
+```
+
+Topics that are closer to each other are more likely to be mutually present in the same document. Note that these dendrograms can "rotate" along their vertical axis, like a mobile over a child's crib. 
+
+
+Now lets look at the distribution in prevalence of these topics across authors.
+``` {r, message=F}
+doc_top.l <- pivot_longer(doc_top,cols=starts_with("t_"),names_to="topic",values_to="prevalence") #converting the document topic matrix to a "tidy" form. This helps us aggregate the data quickly in various ways.
+
+#annoying bug in textmineR - topics 1 through 9 dont have a leading 0.
+doc_top.l$topic[doc_top.l$topic=="t_1"]<-"t_01"
+doc_top.l$topic[doc_top.l$topic=="t_2"]<-"t_02"
+doc_top.l$topic[doc_top.l$topic=="t_3"]<-"t_03"
+doc_top.l$topic[doc_top.l$topic=="t_4"]<-"t_04"
+doc_top.l$topic[doc_top.l$topic=="t_5"]<-"t_05"
+doc_top.l$topic[doc_top.l$topic=="t_6"]<-"t_06"
+doc_top.l$topic[doc_top.l$topic=="t_7"]<-"t_07"
+doc_top.l$topic[doc_top.l$topic=="t_8"]<-"t_08"
+doc_top.l$topic[doc_top.l$topic=="t_9"]<-"t_09"
+
+#now cast back to "wide" for a heatmap
+topic_noter<-  doc_top.l %>%
+  group_by(topic,noter) %>%
+  summarize(mp=mean(prevalence)) %>%
+  pivot_wider(values_from=mp,names_from=topic)
+
+#preparing data for the Heatmap
+topic_noter.m<-as.matrix(t(topic_noter[,2:ncol(topic_noter)]))
+rownames(topic_noter.m)<-paste(notes_ns_lda_sum$topic,notes_ns_lda_sum$label_1)
+colnames(topic_noter.m)<-topic_noter$noter
+colorpalette <- colorRampPalette(brewer.pal(9, "Greens"))(256) # this sets the color range for the heatmap
+
+heatmap(topic_noter.m,scale="col",cexCol=0.8,cexRow=0.7,col=colorpalette)
+```
+
+Note the hierarchical clustering of rows and columns. Noters who are closer to each other have produced more similar notes. Topics that are closer to each other are used similarly by the noters. You can already see topics related to reading subject material, and general "class-level" concerns.
+
+I wonder what this would look like if we had retained stop words. Would it look different?
+
+Once we have a few more weeks of data we can look at time effects. How does the unfolding of the semester affect things like length of note, or emphasis on particular topics, and can we identify the intent of the professor in assigning a particular set of readings to a week?
+
+_To be continued..._
 
